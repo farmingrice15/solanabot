@@ -1,6 +1,8 @@
 solana bot developed by @farmingrice15 @eggbreakfeast & @noahh.aep
 
 Wallet: sollet.io
+https://github.com/raydium-io/raydium-ui
+https://solscan.io/
 Python version: Python 3.9+
 pip install solana requests python-dotenv
 
