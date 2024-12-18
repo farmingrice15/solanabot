@@ -3,11 +3,17 @@ import time
 from datetime import datetime
 from solana.rpc.api import Client
 from solana.keypair import Keypair
+from solana.transaction import Transaction
+from solana.publickey import PublicKey
+from solana.system_program import TransferParams, transfer
+from spl.token.constants import TOKEN_PROGRAM_ID
+from spl.token.instructions import transfer_checked
 from decouple import config
 
 # Constants
 DEXSCREENER_API = "https://api.dexscreener.io/latest/dex/pairs/solana"
 SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
+RAYDIUM_PROGRAM_ID = PublicKey("RAYDIUM_PROGRAM_ID_HERE")  # Replace with the actual program ID
 client = Client(SOLANA_RPC_URL)
 
 # Wallet details
@@ -29,11 +35,20 @@ BALANCE_LOG_FILE = "balance_log.txt"
 # Track purchases
 purchases = []
 
+
 # Utility functions
 def log_to_file(filename, content):
     """Appends content to a log file."""
     with open(filename, "a") as file:
         file.write(content + "\n")
+
+
+def get_token_balance(token_account: PublicKey) -> float:
+    """
+    Fetches the balance of an SPL token account.
+    """
+    response = client.get_token_account_balance(token_account)
+    return float(response["result"]["value"]["uiAmount"])
 
 
 def get_trending_memecoins():
@@ -65,31 +80,61 @@ def get_trending_memecoins():
         return []
 
 
+def create_swap_transaction(pair, amount_in_usd):
+    """
+    Creates and returns a transaction for swapping tokens on Raydium.
+    """
+    token_address = pair["baseToken"]["address"]
+    token_name = pair["baseToken"]["symbol"]
+    price_per_token = pair["priceUsd"]
+
+    # Calculate the amount of tokens to buy
+    amount_of_token = amount_in_usd / price_per_token
+
+    # Define transaction details (placeholder for Raydium-specific logic)
+    transaction = Transaction()
+    # Add Raydium swap instructions here
+    # Example:
+    # transaction.add(ray_swap_instruction(params))
+
+    return transaction, amount_of_token, token_name
+
+
+def execute_transaction(transaction: Transaction):
+    """
+    Sends a transaction to the Solana blockchain.
+    """
+    try:
+        response = client.send_transaction(transaction, wallet)
+        print(f"Transaction successful: {response['result']}")
+        return True
+    except Exception as e:
+        print(f"Transaction failed: {e}")
+        return False
+
+
 def trade_on_raydium(pair, amount_in_usd):
     """
     Executes a swap on Raydium.
     :param pair: Dexscreener token pair data.
     :param amount_in_usd: Amount of USD to spend on the token.
     """
-    token_address = pair["baseToken"]["address"]
-    token_name = pair["baseToken"]["symbol"]
-    price_per_token = pair["priceUsd"]
+    try:
+        transaction, amount_of_token, token_name = create_swap_transaction(pair, amount_in_usd)
+        success = execute_transaction(transaction)
 
-    # Calculate amount of token to buy
-    amount_of_token = amount_in_usd / price_per_token
-
-    # Placeholder for actual Raydium swap logic
-    print(f"Purchased {amount_of_token} {token_name} for {amount_in_usd} USD.")
-
-    # Record the purchase
-    purchases.append({
-        "token": token_name,
-        "amount": amount_of_token,
-        "price": price_per_token,
-        "spent": amount_in_usd,
-        "pair": pair,
-        "bought_at": datetime.now(),
-    })
+        if success:
+            print(f"Purchased {amount_of_token} {token_name} for {amount_in_usd} USD.")
+            purchases.append({
+                "token": token_name,
+                "amount": amount_of_token,
+                "price": pair["priceUsd"],
+                "spent": amount_in_usd,
+                "pair": pair,
+                "bought_at": datetime.now(),
+            })
+    except Exception as e:
+        print(f"Trade failed: {e}")
 
 
 def monitor_purchases():
@@ -120,7 +165,7 @@ def monitor_purchases():
 
 def sell_on_raydium(purchase, reason):
     """
-    Placeholder for selling tokens on Raydium.
+    Executes the logic to sell tokens on Raydium.
     :param purchase: The purchase record to sell.
     :param reason: Reason for selling (stop-loss or take-profit).
     """
@@ -129,64 +174,50 @@ def sell_on_raydium(purchase, reason):
     sold_at = datetime.now()
 
     # Placeholder for actual selling logic
-    print(f"Sold {amount} {token_name} due to {reason}.")
+    transaction = Transaction()
+    # Add sell logic here (Raydium-specific)
 
-    # Log the result
-    bought_at = purchase["bought_at"]
-    spent = purchase["spent"]
-    initial_price = purchase["price"]
-    sold_price = purchase["pair"]["priceUsd"]
-    trade_duration = (sold_at - bought_at).seconds // 60  # in minutes
-    pnl = (sold_price * amount) - spent
+    success = execute_transaction(transaction)
 
-    if pnl > 0:
-        log_to_file(PROFIT_FILE, f"[{sold_at}] {token_name}: +${pnl:.2f} (Duration: {trade_duration} min)")
-    else:
-        log_to_file(LOSS_FILE, f"[{sold_at}] {token_name}: -${abs(pnl):.2f} (Duration: {trade_duration} min)")
+    if success:
+        print(f"Sold {amount} {token_name} due to {reason}.")
+        bought_at = purchase["bought_at"]
+        spent = purchase["spent"]
+        pnl = (purchase["pair"]["priceUsd"] * amount) - spent
 
-    # Log balance details
-    sol_balance = client.get_balance(public_key)["result"]["value"] / 10**9
-    log_to_file(
-        BALANCE_LOG_FILE,
-        f"[{sold_at}] {token_name} | PnL: ${pnl:.2f} | SOL Balance: {sol_balance:.4f} | "
-        f"Bought at: {bought_at}, Sold at: {sold_at}"
-    )
+        if pnl > 0:
+            log_to_file(PROFIT_FILE, f"[{sold_at}] {token_name}: +${pnl:.2f}")
+        else:
+            log_to_file(LOSS_FILE, f"[{sold_at}] {token_name}: -${abs(pnl):.2f}")
 
-
-def check_wallet_balances():
-    """
-    Checks the balances of the Phantom wallet.
-    """
-    balance = client.get_balance(public_key)
-    usd_balance = random.uniform(100, 500)  # Mock USD balance
-    sol_balance = balance['result']['value'] / 10**9
-    print(f"Current Balance: ${usd_balance:.2f} | {sol_balance:.4f} SOL")
+        # Log balance details
+        sol_balance = client.get_balance(public_key)["result"]["value"] / 10**9
+        log_to_file(
+            BALANCE_LOG_FILE,
+            f"[{sold_at}] {token_name} | PnL: ${pnl:.2f} | SOL Balance: {sol_balance:.4f}"
+        )
 
 
-# Main bot workflow
 def main():
     print("Starting memecoin trading bot...")
 
     while True:
-        # Step 1: Display wallet balances
-        check_wallet_balances()
-
-        # Step 2: Fetch trending memecoins
+        # Step 1: Fetch trending memecoins
         print("Fetching trending memecoins...")
         trending_tokens = get_trending_memecoins()
         print(f"Found {len(trending_tokens)} potential memecoins.")
 
-        # Step 3: Trade new tokens
+        # Step 2: Trade new tokens
         for token in trending_tokens:
             if len(purchases) >= 10:  # Limit to 10 active trades
                 break
             trade_on_raydium(token, MAX_SPEND_PER_MEMECOIN)
 
-        # Step 4: Monitor purchases for stop-loss or take-profit
+        # Step 3: Monitor purchases
         print("Monitoring purchases for price changes...")
         monitor_purchases()
 
-        # Step 5: Wait before polling for new coins
+        # Step 4: Wait before polling for new coins
         print(f"Sleeping for {POLL_INTERVAL / 60} minutes...")
         time.sleep(POLL_INTERVAL)
 
